@@ -1,0 +1,146 @@
+multinode: false
+
+modelArtifacts:
+  uri: "hf://ibm-granite/granite-4.1-8b"
+  name: "ibm-granite/granite-4.1-8b"
+  size: 200Gi
+  authSecretName: "llm-d-hf-token"
+  labels:
+    llm-d.ai/inference-serving: "true"
+    llm-d.ai/guide: "precise-prefix-cache-aware"
+    llm-d.ai/accelerator-variant: "gpu"
+    llm-d.ai/accelerator-vendor: "nvidia"
+    llm-d.ai/model: "granite-4.1-8b"
+
+
+routing:
+  proxy:
+    enabled: false
+
+accelerator:
+  type: nvidia
+
+decode:
+  create: true
+  parallelism:
+    tensor: 1
+    data: 1
+  replicas: 8
+  nodeSelector:
+    # DGX H100 nodes commonly expose H100 SXM 80GB GPUs with this GPU Operator product label.
+    # Verify with: kubectl get nodes -L nvidia.com/gpu.product
+    nvidia.com/gpu.product: NVIDIA-H100-80GB-HBM3
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: DoNotSchedule
+      labelSelector:
+        matchLabels:
+          llm-d.ai/model: granite-4.1-8b
+          llm-d.ai/role: decode
+  monitoring:
+    podmonitor:
+      enabled: true
+      portName: "vllm"
+      path: "/metrics"
+      interval: "30s"
+  containers:
+    - name: "vllm"
+      image: ghcr.io/llm-d/llm-d-cuda:v0.7.0-rc.4
+      modelCommand: vllmServe
+      args:
+        - "--block-size=16"
+        - "--trust-remote-code"
+        - "--kv-events-config"
+        - |-
+          {
+            "enable_kv_cache_events": true,
+            "publisher": "zmq",
+            "endpoint": "tcp://gaie-$(GAIE_RELEASE_NAME_POSTFIX)-epp.$(NAMESPACE).svc.cluster.local:5557",
+            "topic": "kv@$(POD_IP):8000@ibm-granite/granite-4.1-8b"
+          }
+        - "--disable-uvicorn-access-log"
+        - "--gpu-memory-utilization=0.85"
+      env:
+        - name: GAIE_RELEASE_NAME_POSTFIX
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: status.podIP
+        - name: VLLM_LOGGING_LEVEL
+          value: INFO
+        - name: TRITON_CACHE_DIR
+          value: /.triton-cache
+        - name: HF_HOME
+          value: /root/.cache/huggingface
+      ports:
+        - containerPort: 8000
+          name: vllm
+          protocol: TCP
+      resources:
+        limits:
+          cpu: '16'
+          memory: 96Gi
+        requests:
+          cpu: '8'
+          memory: 48Gi
+      mountModelVolume: false
+      volumeMounts:
+        - name: metrics-volume
+          mountPath: /.config
+        - name: shm
+          mountPath: /dev/shm
+        - name: torch-compile-cache
+          mountPath: /.cache
+        - name: triton-cache
+          mountPath: /.triton-cache
+        - name: hf-cache
+          mountPath: /root/.cache/huggingface
+      securityContext:
+        runAsUser: 0
+        runAsGroup: 0
+      startupProbe:
+        httpGet:
+          path: /v1/models
+          port: vllm
+        initialDelaySeconds: 60
+        periodSeconds: 30
+        timeoutSeconds: 10
+        failureThreshold: 200
+      livenessProbe:
+        httpGet:
+          path: /health
+          port: vllm
+        periodSeconds: 10
+        timeoutSeconds: 5
+        failureThreshold: 3
+      readinessProbe:
+        httpGet:
+          path: /v1/models
+          port: vllm
+        periodSeconds: 10
+        timeoutSeconds: 2
+        failureThreshold: 3
+  volumes:
+    - name: metrics-volume
+      emptyDir: {}
+    - name: torch-compile-cache
+      emptyDir: {}
+    - name: shm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 20Gi
+    - name: triton-cache
+      emptyDir: {}
+    - name: hf-cache
+      hostPath:
+        path: /var/lib/llm-d-hf-cache
+        type: DirectoryOrCreate
+
+prefill:
+  create: false

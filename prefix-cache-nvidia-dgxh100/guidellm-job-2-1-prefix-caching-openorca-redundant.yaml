@@ -1,0 +1,175 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: guidellm-bench-1-1-qwen2-5-7b-openorca
+  #namespace: varun-benchmark
+  #labels:
+  #  benchmark.ibm/owner: varun
+  #  benchmark.ibm/experiment: "1.1"
+  #  benchmark.ibm/model: "qwen2.5-7b-instruct"
+  #  benchmark.ibm/profile: "concurrent"
+  #  benchmark.ibm/goal: "saturation-observation"
+spec:
+  activeDeadlineSeconds: 7200
+  template:
+    metadata:
+      #labels:
+      #  benchmark.ibm/owner: varun
+      #  benchmark.ibm/experiment: "1.1"
+      #  benchmark.ibm/model: "qwen2.5-7b-instruct"
+      #  benchmark.ibm/profile: "concurrent"
+      #  benchmark.ibm/goal: "saturation-observation"
+    spec:
+      containers:
+      - name: guidellm
+        image: ghcr.io/vllm-project/guidellm:v0.6.0
+        env:
+        - name: HOME
+          value: /results
+        - name: HF_HOME
+          value: /results/.cache
+        - name: TOKENIZERS_PARALLELISM
+          value: "false"
+        - name: GUIDELLM_TARGET
+          value: https://qwen2-7b-kv-cache-routing-inference-pool-ip-69392388.vinod.svc.cluster.local:8000
+          #value: https://qwen2-7b-kv-cache-routing-kserve-workload-svc.vinod.svc.cluster.local:8000
+        - name: GUIDELLM_MODEL
+          value: Qwen/Qwen2.5-7B-Instruct
+        - name: GUIDELLM_PROCESSOR
+          value: Qwen/Qwen2.5-7B-Instruct
+        - name: GUIDELLM_RATE
+          value: "100,200,300,400" #,500,600,700" #,800,900,1000"
+        - name: GUIDELLM_MAX_REQUESTS
+          value: "500"
+        - name: GUIDELLM_MAX_SECONDS
+          value: "300"
+        - name: GUIDELLM_DATASET
+          value: Open-Orca/OpenOrca
+        - name: GUIDELLM_DATASET_SPLIT
+          value: train
+        - name: GUIDELLM_DATA_BUILD_SAMPLES
+          value: "1000"
+        - name: GUIDELLM_DATA_SAMPLES
+          value: "500"
+        - name: GUIDELLM_REDUNDANT_PERCENT
+          value: "40"
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            set -eu
+
+            python -m pip install --no-cache-dir -q datasets
+            python - <<'PY'
+            import json
+            import os
+            import random
+            import sys
+
+            import httpx
+            from datasets import load_dataset
+
+            dataset = os.environ.get("GUIDELLM_DATASET", "Open-Orca/OpenOrca")
+            split = os.environ.get("GUIDELLM_DATASET_SPLIT", "train")
+            limit = int(os.environ.get("GUIDELLM_DATA_BUILD_SAMPLES", "50000"))
+            redundant_percent = int(os.environ.get("GUIDELLM_REDUNDANT_PERCENT", "25"))
+            if redundant_percent < 0 or redundant_percent >= 100:
+                print("GUIDELLM_REDUNDANT_PERCENT must be in [0, 99]", file=sys.stderr)
+                sys.exit(1)
+
+            try:
+                stream = load_dataset(dataset, split=split, streaming=True)
+            except Exception as exc:
+                print(f"Failed to load dataset {dataset}:{split}: {exc}", file=sys.stderr)
+                sys.exit(1)
+
+            unique_target = max(1, limit * (100 - redundant_percent) // 100)
+            redundant_target = max(0, limit - unique_target)
+            unique_prompts = []
+            seen = set()
+            for row in stream:
+                question = (row.get("question") or "").strip()
+                system_prompt = (row.get("system_prompt") or "").strip()
+                if not question:
+                    continue
+
+                prompt = f"{system_prompt}\n\n{question}" if system_prompt else question
+                if prompt in seen:
+                    continue
+                seen.add(prompt)
+                unique_prompts.append(prompt)
+                if len(unique_prompts) >= unique_target:
+                    break
+
+            if not unique_prompts:
+                print("No prompts extracted from dataset", file=sys.stderr)
+                sys.exit(1)
+
+            rng = random.Random(42)
+            prompts = list(unique_prompts)
+            for _ in range(redundant_target):
+                prompts.append(rng.choice(unique_prompts))
+            rng.shuffle(prompts)
+
+            with open("/tmp/openorca-prompts.jsonl", "w", encoding="utf-8") as f:
+                for prompt in prompts:
+                    f.write(json.dumps({"prompt": prompt}, ensure_ascii=False) + "\n")
+
+            print(
+                "Built /tmp/openorca-prompts.jsonl with "
+                f"{len(prompts)} prompts ({len(unique_prompts)} unique, "
+                f"{len(prompts) - len(unique_prompts)} redundant)"
+            )
+
+            target = os.environ["GUIDELLM_TARGET"].rstrip("/")
+            model = os.environ["GUIDELLM_MODEL"]
+            timeout = httpx.Timeout(60.0, connect=5.0)
+
+            try:
+                with httpx.Client(http2=True, verify=False, timeout=timeout) as client:
+                    models = client.get(f"{target}/v1/models")
+                    models.raise_for_status()
+                    if "data" not in models.json():
+                        raise ValueError("/v1/models response missing data")
+
+                    completion = client.post(
+                        f"{target}/v1/chat/completions",
+                        json={
+                            "model": model,
+                            "messages": [{"role": "user", "content": "ping"}],
+                            "max_tokens": 8,
+                            "stream": False,
+                        },
+                    )
+                    completion.raise_for_status()
+                    if "choices" not in completion.json():
+                        raise ValueError("/v1/chat/completions response missing choices")
+            except Exception as exc:
+                print(f"GuideLLM preflight failed for {target}: {exc}", file=sys.stderr)
+                sys.exit(1)
+
+            print(f"GuideLLM preflight passed for {target}")
+            PY
+
+            exec guidellm benchmark run \
+              --target "${GUIDELLM_TARGET}" \
+              --model "${GUIDELLM_MODEL}" \
+              --processor "${GUIDELLM_PROCESSOR}" \
+              --profile "concurrent" \
+              --rate "${GUIDELLM_RATE}" \
+              --max-seconds "${GUIDELLM_MAX_SECONDS}" \
+              --max-requests "${GUIDELLM_MAX_REQUESTS}" \
+              --max-errors "200" \
+              --data "/tmp/openorca-prompts.jsonl" \
+              --data-samples "${GUIDELLM_DATA_SAMPLES}" \
+              --output-dir "/results" \
+              --outputs "1-1-qwen2-5-7b-instruct-openorca.json,1-1-qwen2-5-7b-instruct-openorca.html,1-1-qwen2-5-7b-instruct-openorca.csv" \
+              --backend-kwargs "{\"validate_backend\": false, \"timeout\": 600.0}"
+        volumeMounts:
+        - name: results-volume
+          mountPath: /results
+      volumes:
+      - name: results-volume
+        persistentVolumeClaim:
+          claimName: guidellm-results-pvc
+      restartPolicy: Never
+  backoffLimit: 1

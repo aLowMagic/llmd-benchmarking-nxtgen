@@ -1,0 +1,63 @@
+endpoint:
+  stack_name: &stack_name llmd-precise-sarvam-sanity
+  model: &model sarvamai/sarvam-30b
+  namespace: &namespace llm-d-sarvam-kv
+  base_url: &url http://precise-sarvam-epp.llm-d-sarvam-kv.svc.cluster.local:8081
+  hf_token_secret: llm-d-hf-token
+
+control:
+  work_dir: $HOME/llm-d-bench-work-llmd
+  kubectl: kubectl
+
+harness:
+  name: &harness_name inference-perf
+  namespace: *namespace
+  parallelism: 1
+  wait_timeout: 3000
+  image: ghcr.io/llm-d/llm-d-benchmark:v0.5.2
+  results_pvc: ""
+
+env:
+  - name: RAYON_NUM_THREADS
+    value: "4"
+
+workload:
+  shared_prefix:
+    load:
+      type: poisson
+      stages:
+      - rate: 3
+        duration: 40
+      - rate: 5
+        duration: 30
+      - rate: 10
+        duration: 30
+      - rate: 15
+        duration: 30
+    api:
+      type: completion
+      streaming: true
+    server:
+      type: vllm
+      model_name: *model
+      base_url: *url
+      ignore_eos: true
+    tokenizer:
+      pretrained_model_name_or_path: *model
+    data:
+      type: shared_prefix
+      shared_prefix:
+        num_groups: 50
+        num_prompts_per_group: 5
+        system_prompt_len: 2000
+        question_len: 500
+        output_len: 200
+        enable_multi_turn_chat: false
+    report:
+      request_lifecycle:
+        summary: true
+        per_stage: true
+        per_request: true
+    storage:
+      local_storage:
+        path: /workspace

@@ -1,0 +1,77 @@
+inferenceExtension:
+  replicas: 1
+  flags:
+    v: 4
+  image:
+    registry: ghcr.io
+    repository: llm-d/llm-d-inference-scheduler
+    tag: v0.8.0
+    pullPolicy: Always
+  extProcPort: 9002
+  extraContainerPorts:
+    - name: zmq
+      containerPort: 5557
+      protocol: TCP
+  extraServicePorts:
+    - name: http
+      port: 8081
+      targetPort: 8081
+      protocol: TCP
+    - name: zmq
+      port: 5557
+      targetPort: 5557
+      protocol: TCP
+  env:
+    - name: HF_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: llm-d-hf-token
+          key: HF_TOKEN
+
+  pluginsConfigFile: "precise-prefix-cache-config.yaml"
+  # Using approximate (hash-based) prefix cache producer + scorer because the
+  # precise scorer requires a tokenizer that can load granite-4.1-8b's custom
+  # modeling code (trust_remote_code), which neither the UDS sidecar nor the
+  # stock v0.8.0 embedded-tokenizers build supports.
+  # The runner auto-instantiates `approx-prefix-cache-producer` when it sees
+  # `prefix-cache-scorer` as a consumer.
+  pluginsCustomConfig:
+    precise-prefix-cache-config.yaml: |
+      apiVersion: inference.networking.x-k8s.io/v1alpha1
+      kind: EndpointPickerConfig
+      plugins:
+        - type: single-profile-handler
+        - type: prefix-cache-scorer
+        - type: kv-cache-utilization-scorer
+        - type: queue-scorer
+        - type: max-score-picker
+      schedulingProfiles:
+        - name: default
+          plugins:
+            - pluginRef: prefix-cache-scorer
+              weight: 3.0
+            - pluginRef: kv-cache-utilization-scorer
+              weight: 2.0
+            - pluginRef: queue-scorer
+              weight: 2.0
+            - pluginRef: max-score-picker
+
+  tracing:
+    enabled: false
+  monitoring:
+    interval: "10s"
+    prometheus:
+      enabled: false
+
+inferencePool:
+  targetPorts:
+    - number: 8000
+  modelServerType: vllm
+  apiVersion: inference.networking.k8s.io/v1
+  modelServers:
+    matchLabels:
+      llm-d.ai/inference-serving: "true"
+      llm-d.ai/guide: "precise-prefix-cache-aware"
+
+provider:
+  name: none

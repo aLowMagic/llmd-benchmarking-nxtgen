@@ -1,0 +1,114 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: guidellm-bench-2-1-qwen2-5-7b-sat
+  #namespace: varun-benchmark
+  #labels:
+  #  benchmark.ibm/owner: varun
+  #  benchmark.ibm/experiment: "1.1"
+  #  benchmark.ibm/model: "qwen2.5-7b-instruct"
+  #  benchmark.ibm/profile: "concurrent"
+  #  benchmark.ibm/goal: "saturation-observation"
+spec:
+  activeDeadlineSeconds: 7200
+  template:
+    metadata:
+      #labels:
+      #  benchmark.ibm/owner: varun
+      #  benchmark.ibm/experiment: "1.1"
+      #  benchmark.ibm/model: "qwen2.5-7b-instruct"
+      #  benchmark.ibm/profile: "concurrent"
+      #  benchmark.ibm/goal: "saturation-observation"
+    spec:
+      containers:
+      - name: guidellm
+        image: ghcr.io/vllm-project/guidellm:v0.6.0
+        env:
+        - name: HOME
+          value: /results
+        - name: HF_HOME
+          value: /results/.cache
+        - name: TOKENIZERS_PARALLELISM
+          value: "false"
+        - name: GUIDELLM_TARGET
+          value: https://qwen2-7b-kv-cache-routing-kserve-workload-svc.vinod.svc.cluster.local:8000
+        - name: GUIDELLM_MODEL
+          value: Qwen/Qwen2.5-7B-Instruct
+        - name: GUIDELLM_PROCESSOR
+          value: Qwen/Qwen2.5-7B-Instruct
+        - name: GUIDELLM_RATE
+          value: "100,200,300,400,500,600,700,800,900,1000"
+        - name: GUIDELLM_MAX_REQUESTS
+          value: "1000"
+        - name: GUIDELLM_MAX_SECONDS
+          value: "300"
+        - name: GUIDELLM_DATASET
+          value: HuggingFaceH4/ultrachat_200k
+        - name: GUIDELLM_DATASET_SPLIT
+          value: train_sft
+        - name: GUIDELLM_DATA_BUILD_SAMPLES
+          value: "1000"
+        - name: GUIDELLM_DATA_SAMPLES
+          value: "500"
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            set -eu
+
+            python - <<'PY'
+            import os
+            import sys
+            import httpx
+
+            target = os.environ["GUIDELLM_TARGET"].rstrip("/")
+            model = os.environ["GUIDELLM_MODEL"]
+            timeout = httpx.Timeout(60.0, connect=5.0)
+
+            try:
+                with httpx.Client(http2=True, verify=False, timeout=timeout) as client:
+                    models = client.get(f"{target}/v1/models")
+                    models.raise_for_status()
+                    if "data" not in models.json():
+                        raise ValueError("/v1/models response missing data")
+
+                    completion = client.post(
+                        f"{target}/v1/chat/completions",
+                        json={
+                            "model": model,
+                            "messages": [{"role": "user", "content": "ping"}],
+                            "max_tokens": 8,
+                            "stream": False,
+                        },
+                    )
+                    completion.raise_for_status()
+                    if "choices" not in completion.json():
+                        raise ValueError("/v1/chat/completions response missing choices")
+            except Exception as exc:
+                print(f"GuideLLM preflight failed for {target}: {exc}", file=sys.stderr)
+                sys.exit(1)
+
+            print(f"GuideLLM preflight passed for {target}")
+            PY
+            
+            exec guidellm benchmark run \
+              --target "${GUIDELLM_TARGET}" \
+              --model "${GUIDELLM_MODEL}" \
+              --processor "${GUIDELLM_PROCESSOR}" \
+              --profile "concurrent" \
+              --rate "${GUIDELLM_RATE}" \
+              --max-seconds "${GUIDELLM_MAX_SECONDS}" \
+              --max-requests "${GUIDELLM_MAX_REQUESTS}" \
+              --max-errors "200" \
+              --data "prompt_tokens=10000,output_tokens=1000" \
+              --output-dir "/results" \
+              --outputs "2-1-qwen2-5-7b-instruct.json,2-1-qwen2-5-7b-instruct.html,2-1-qwen2-5-7b-instruct.csv" \
+              --backend-kwargs "{\"validate_backend\": false, \"timeout\": 600.0}"
+        volumeMounts:
+        - name: results-volume
+          mountPath: /results
+      volumes:
+      - name: results-volume
+        persistentVolumeClaim:
+          claimName: guidellm-results-pvc
+      restartPolicy: Never
+  backoffLimit: 1

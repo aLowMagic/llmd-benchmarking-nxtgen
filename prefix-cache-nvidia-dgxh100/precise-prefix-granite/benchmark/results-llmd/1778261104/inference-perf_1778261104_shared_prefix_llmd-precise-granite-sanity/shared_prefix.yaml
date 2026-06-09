@@ -1,0 +1,38 @@
+load:
+  type: poisson
+  stages:
+    - rate: 3
+      duration: 40
+    - rate: 5
+      duration: 30
+    - rate: 10
+      duration: 30
+    - rate: 15
+      duration: 30
+api:
+  type: completion
+  streaming: true
+server:
+  type: vllm
+  model_name: ibm-granite/granite-4.1-8b
+  base_url: http://precise-granite-epp.llm-d-granite-kv.svc.cluster.local:8081
+  ignore_eos: true
+tokenizer:
+  pretrained_model_name_or_path: ibm-granite/granite-4.1-8b
+data:
+  type: shared_prefix
+  shared_prefix:
+    num_groups: 50
+    num_prompts_per_group: 5
+    system_prompt_len: 2000
+    question_len: 500
+    output_len: 200
+    enable_multi_turn_chat: false
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true
+    per_request: true
+storage:
+  local_storage:
+    path: /requests/inference-perf_1778261104_shared_prefix_llmd-precise-granite-sanity

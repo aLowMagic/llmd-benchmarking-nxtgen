@@ -1,0 +1,164 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: guidellm-bench-2-1-qwen2-5-7b-openorca
+  namespace: redhat-ods-applications
+  #labels:
+  #  benchmark.ibm/owner: varun
+  #  benchmark.ibm/experiment: "1.1"
+  #  benchmark.ibm/model: "qwen2.5-7b-instruct"
+  #  benchmark.ibm/profile: "concurrent"
+  #  benchmark.ibm/goal: "saturation-observation"
+spec:
+  activeDeadlineSeconds: 7200
+  template:
+    metadata: {}
+    spec:
+      serviceAccountName: guidellm-benchmark-sa
+      containers:
+      - name: guidellm
+        image: ghcr.io/vllm-project/guidellm:v0.6.0
+        env:
+        - name: HOME
+          value: /results
+        - name: HF_HOME
+          value: /results/.cache
+        - name: TOKENIZERS_PARALLELISM
+          value: "false"
+        - name: GUIDELLM_TARGET
+          value: http://benchmark-gateway-data-science-gateway-class.redhat-ods-applications.svc.cluster.local/redhat-ods-applications/qwen2-7b-kv-cache-routing
+          #value: https://qwen2-7b-kv-cache-routing-kserve-workload-svc.redhat-ods-applications.svc.cluster.local:8000
+        - name: GUIDELLM_MODEL
+          value: TinyLlama/TinyLlama-1.1B-Chat-v1.0
+        - name: GUIDELLM_PROCESSOR
+          value: TinyLlama/TinyLlama-1.1B-Chat-v1.0
+        - name: GUIDELLM_RATE
+          value: "50,100,150,200,250" #,500,750,1000"
+        #- name: GUIDELLM_MAX_REQUESTS
+        #  value: "100"
+        - name: GUIDELLM_MAX_SECONDS
+          value: "30"
+        - name: GUIDELLM_DATASET
+          value: Open-Orca/OpenOrca
+        - name: GUIDELLM_DATASET_SPLIT
+          value: train
+        - name: GUIDELLM_DATA_BUILD_SAMPLES
+          value: "1000"
+        - name: GUIDELLM_DATA_SAMPLES
+          value: "500"
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            set -eu
+
+            python -m pip install --no-cache-dir -q datasets
+            python - <<'PY'
+            import json
+            import os
+            import sys
+
+            import httpx
+            from datasets import load_dataset
+
+            dataset = os.environ.get("GUIDELLM_DATASET", "Open-Orca/OpenOrca")
+            split = os.environ.get("GUIDELLM_DATASET_SPLIT", "train")
+            limit = int(os.environ.get("GUIDELLM_DATA_BUILD_SAMPLES", "50000"))
+
+            try:
+                stream = load_dataset(dataset, split=split, streaming=True)
+            except Exception as exc:
+                print(f"Failed to load dataset {dataset}:{split}: {exc}", file=sys.stderr)
+                sys.exit(1)
+
+            written = 0
+            with open("/tmp/openorca-prompts.jsonl", "w", encoding="utf-8") as f:
+                for row in stream:
+                    question = (row.get("question") or "").strip()
+                    system_prompt = (row.get("system_prompt") or "").strip()
+
+                    if not question:
+                        continue
+
+                    prompt = f"{system_prompt}\n\n{question}" if system_prompt else question
+                    f.write(json.dumps({"prompt": prompt}, ensure_ascii=False) + "\n")
+                    written += 1
+                    if written >= limit:
+                        break
+
+            if written == 0:
+                print("No prompts extracted from dataset", file=sys.stderr)
+                sys.exit(1)
+            print(f"Built /tmp/openorca-prompts.jsonl with {written} prompts")
+
+            target = os.environ["GUIDELLM_TARGET"].rstrip("/")
+            model = os.environ["GUIDELLM_MODEL"]
+            timeout = httpx.Timeout(60.0, connect=5.0)
+            token = os.environ.get("GATEWAY_TOKEN", "")
+            if not token:
+                try:
+                    with open("/var/run/secrets/kubernetes.io/serviceaccount/token", "r", encoding="utf-8") as tf:
+                        token = tf.read().strip()
+                except Exception:
+                    token = ""
+            headers = {"Authorization": f"Bearer {token}"} if token else {}
+
+            try:
+                with httpx.Client(http2=True, verify=False, timeout=timeout, headers=headers) as client:
+                    models = client.get(f"{target}/v1/models")
+                    models.raise_for_status()
+                    if "data" not in models.json():
+                        raise ValueError("/v1/models response missing data")
+
+                    # Try chat endpoint first (preferred for chat-tuned models), then
+                    # fall back to legacy completions for base models.
+                    completion = client.post(
+                        f"{target}/v1/chat/completions",
+                        json={
+                            "model": model,
+                            "messages": [{"role": "user", "content": "ping"}],
+                            "max_tokens": 8,
+                            "stream": False,
+                        },
+                    )
+                    if completion.status_code == 404:
+                        completion = client.post(
+                            f"{target}/v1/completions",
+                            json={
+                                "model": model,
+                                "prompt": "ping",
+                                "max_tokens": 8,
+                                "stream": False,
+                            },
+                        )
+                    completion.raise_for_status()
+                    if "choices" not in completion.json():
+                        raise ValueError("completion response missing choices")
+            except Exception as exc:
+                print(f"GuideLLM preflight failed for {target}: {exc}", file=sys.stderr)
+                sys.exit(1)
+
+            print(f"GuideLLM preflight passed for {target}")
+            PY
+
+            exec guidellm benchmark run \
+              --target "${GUIDELLM_TARGET}" \
+              --model "${GUIDELLM_MODEL}" \
+              --processor "${GUIDELLM_PROCESSOR}" \
+              --profile "concurrent" \
+              --rate "${GUIDELLM_RATE}" \
+              --max-seconds "${GUIDELLM_MAX_SECONDS}" \
+              --max-errors "200" \
+              --data "/tmp/openorca-prompts.jsonl" \
+              --data-samples "${GUIDELLM_DATA_SAMPLES}" \
+              --output-dir "/results" \
+              --outputs "2-1-qwen2-5-7b-instruct-openorca.json,2-1-qwen2-5-7b-instruct-openorca.html,2-1-qwen2-5-7b-instruct-openorca.csv" \
+              --backend-kwargs "{\"api_key\": \"${GATEWAY_TOKEN:-$(cat /var/run/secrets/kubernetes.io/serviceaccount/token)}\", \"validate_backend\": false, \"timeout\": 600.0}"
+        volumeMounts:
+        - name: results-volume
+          mountPath: /results
+      volumes:
+      - name: results-volume
+        persistentVolumeClaim:
+          claimName: guidellm-results-pvc
+      restartPolicy: Never
+  backoffLimit: 1

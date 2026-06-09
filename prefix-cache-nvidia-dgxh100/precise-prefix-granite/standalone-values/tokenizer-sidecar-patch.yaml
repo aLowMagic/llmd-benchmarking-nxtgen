@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: tokenizer-uds-config
+data:
+  placeholder: ""
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: precise-granite-epp
+spec:
+  template:
+    spec:
+      containers:
+        - name: tokenizer-uds
+          image: ghcr.io/llm-d/llm-d-uds-tokenizer:v0.7.1
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: TOKENIZERS_DIR
+              value: /tokenizers
+            - name: HF_HOME
+              value: /tokenizers
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: llm-d-hf-token
+                  key: HF_TOKEN
+          volumeMounts:
+            - name: tokenizers
+              mountPath: /tokenizers
+            - name: tokenizer-uds
+              mountPath: /tmp/tokenizer
+        - name: epp
+          volumeMounts:
+            - name: tokenizer-uds
+              mountPath: /tmp/tokenizer
+      volumes:
+        - name: tokenizers
+          emptyDir: {}
+        - name: tokenizer-uds
+          emptyDir: {}

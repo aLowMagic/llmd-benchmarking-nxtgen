@@ -1,0 +1,92 @@
+inferenceExtension:
+  replicas: 1
+  flags:
+    v: 4
+  image:
+    registry: ghcr.io
+    repository: llm-d/llm-d-inference-scheduler
+    tag: v0.7.1
+    pullPolicy: Always
+  extProcPort: 9002
+  extraContainerPorts:
+    - name: zmq
+      containerPort: 5557
+      protocol: TCP
+  extraServicePorts:
+    - name: http
+      port: 8081
+      targetPort: 8081
+      protocol: TCP
+    - name: zmq
+      port: 5557
+      targetPort: 5557
+      protocol: TCP
+  env:
+    - name: HF_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: llm-d-hf-token
+          key: HF_TOKEN
+
+  pluginsConfigFile: "precise-prefix-cache-config.yaml"
+  pluginsCustomConfig:
+    precise-prefix-cache-config.yaml: |
+      apiVersion: inference.networking.x-k8s.io/v1alpha1
+      kind: EndpointPickerConfig
+      plugins:
+        - type: single-profile-handler
+        - type: tokenizer
+          parameters:
+            modelName: ibm-granite/granite-4.1-8b
+            udsTokenizerConfig:
+              socketFile: /tmp/tokenizer/tokenizer-uds.socket
+        - type: precise-prefix-cache-scorer
+          parameters:
+            tokenProcessorConfig:
+              blockSize: 16
+            indexerConfig:
+              speculativeIndexing: true
+              tokenizersPoolConfig:
+                modelName: ibm-granite/granite-4.1-8b
+                local: null
+                hf: null
+                uds:
+                  socketFile: /tmp/tokenizer/tokenizer-uds.socket
+            kvEventsConfig:
+              topicFilter: "kv@"
+              concurrency: 4
+              discoverPods: false
+              zmqEndpoint: "tcp://*:5557"
+        - type: kv-cache-utilization-scorer
+        - type: queue-scorer
+        - type: max-score-picker
+      schedulingProfiles:
+        - name: default
+          plugins:
+            - pluginRef: precise-prefix-cache-scorer
+              weight: 3.0
+            - pluginRef: kv-cache-utilization-scorer
+              weight: 2.0
+            - pluginRef: queue-scorer
+              weight: 2.0
+            - pluginRef: max-score-picker
+
+  tracing:
+    enabled: false
+  monitoring:
+    interval: "10s"
+    prometheus:
+      enabled: false
+
+inferencePool:
+  targetPorts:
+    - number: 8000
+  modelServerType: vllm
+  apiVersion: inference.networking.k8s.io/v1
+  modelServers:
+    matchLabels:
+      llm-d.ai/inference-serving: "true"
+      llm-d.ai/guide: "precise-prefix-cache-aware"
+
+provider:
+  name: none

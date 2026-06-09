@@ -1,0 +1,107 @@
+api:
+  type: completion
+  streaming: true
+  headers: null
+data:
+  type: shared_prefix
+  path: null
+  input_distribution: null
+  output_distribution: null
+  shared_prefix:
+    num_unique_system_prompts: 150
+    num_users_per_system_prompt: 5
+    system_prompt_len: 6000
+    question_len: 1200
+    output_len: 1000
+    enable_multi_turn_chat: false
+  trace: null
+load:
+  type: poisson
+  interval: 1.0
+  stages:
+  - rate: 15.0
+    duration: 50
+    num_requests: null
+    concurrency_level: null
+  - rate: 3.0
+    duration: 20
+    num_requests: null
+    concurrency_level: null
+  - rate: 10.0
+    duration: 20
+    num_requests: null
+    concurrency_level: null
+  - rate: 15.0
+    duration: 20
+    num_requests: null
+    concurrency_level: null
+  - rate: 20.0
+    duration: 30
+    num_requests: null
+    concurrency_level: null
+  - rate: 25.0
+    duration: 30
+    num_requests: null
+    concurrency_level: null
+  - rate: 30.0
+    duration: 30
+    num_requests: null
+    concurrency_level: null
+  - rate: 40.0
+    duration: 30
+    num_requests: null
+    concurrency_level: null
+  - rate: 50.0
+    duration: 30
+    num_requests: null
+    concurrency_level: null
+  sweep: null
+  num_workers: 256
+  worker_max_concurrency: 100
+  worker_max_tcp_connections: 2500
+  trace: null
+  circuit_breakers: []
+  request_timeout: null
+  lora_traffic_split: null
+metrics: null
+report:
+  request_lifecycle:
+    summary: true
+    per_stage: true
+    per_request: true
+    per_adapter: true
+    per_adapter_stage: false
+    percentiles:
+    - 0.1
+    - 1.0
+    - 5.0
+    - 10.0
+    - 25.0
+    - 50.0
+    - 75.0
+    - 90.0
+    - 95.0
+    - 99.0
+    - 99.9
+  prometheus:
+    summary: true
+    per_stage: false
+storage:
+  local_storage:
+    path: /requests/inference-perf_1778686453_shared_prefix_k8s-roundrobin-sarvam-scaled
+    report_file_prefix: null
+  google_cloud_storage: null
+  simple_storage_service: null
+server:
+  type: vllm
+  model_name: sarvamai/sarvam-30b
+  base_url: http://decode-clusterip.llm-d-sarvam-kv.svc.cluster.local:8000
+  ignore_eos: true
+  api_key: null
+  cert_path: null
+  key_path: null
+tokenizer:
+  pretrained_model_name_or_path: sarvamai/sarvam-30b
+  trust_remote_code: null
+  token: null
+circuit_breakers: null

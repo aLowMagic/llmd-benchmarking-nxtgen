@@ -1,0 +1,131 @@
+# kv-cache
+apiVersion: serving.kserve.io/v1alpha1
+kind: LLMInferenceService
+metadata:
+  name: qwen2-7b-kv-cache-routing
+  namespace: redhat-ods-applications
+  annotations:
+    opendatahub.io/model-type: generative
+    openshift.io/display-name: qwen2-7b-kv-cache-routing
+    security.opendatahub.io/enable-auth: 'false'
+spec:
+  # Four replicas to demonstrate KV cache routing across instances
+  replicas: 4
+  model:
+    uri: hf://TinyLlama/TinyLlama-1.1B-Chat-v1.0
+    name: TinyLlama/TinyLlama-1.1B-Chat-v1.0
+  router:
+    scheduler:
+      pool:
+        spec:
+          selector:
+            app.kubernetes.io/name: qwen2-7b-kv-cache-routing
+            kserve.io/component: workload
+          targetPortNumber: 8000
+          extensionRef:
+            name: qwen2-7b-kv-cache-routing-epp-service
+            kind: Service
+            portNumber: 9002
+      template:
+        containers:
+        - name: main
+          env:
+            - name: TOKENIZER_CACHE_DIR
+              value: /tmp/tokenizer-cache
+            - name: HF_HOME
+              value: /tmp/tokenizer-cache
+            - name: TRANSFORMERS_CACHE
+              value: /tmp/tokenizer-cache
+            - name: XDG_CACHE_HOME
+              value: /tmp
+          args:
+          - --v=4
+          - --pool-group
+          - inference.networking.x-k8s.io
+          - --pool-name
+          - "{{ ChildName .ObjectMeta.Name `-inference-pool` }}"
+          - --pool-namespace
+          - "{{ .ObjectMeta.Namespace }}"
+          - --zap-encoder
+          - json
+          - --grpc-port
+          - "9002"
+          - --grpc-health-port
+          - "9003"
+          - --secure-serving
+          - --model-server-metrics-scheme
+          - https
+          - --model-server-metrics-https-insecure-skip-verify
+          - --cert-path
+          - /var/run/kserve/tls
+          - --config-text
+          - |
+            apiVersion: inference.networking.x-k8s.io/v1alpha1
+            kind: EndpointPickerConfig
+            plugins:
+            - type: single-profile-handler
+            - type: queue-scorer
+            - type: kv-cache-utilization-scorer
+            - type: precise-prefix-cache-scorer
+            schedulingProfiles:
+            - name: default
+              plugins:
+              - pluginRef: queue-scorer
+                weight: 1
+              - pluginRef: kv-cache-utilization-scorer
+                weight: 1
+              - pluginRef: precise-prefix-cache-scorer
+                #weight: 1
+                weight: 3
+          volumeMounts:
+          - name: tokenizer-cache
+            mountPath: /tmp/tokenizer-cache
+          - name: cachi2-cache
+            mountPath: /cachi2
+        volumes:
+          - name: tokenizer-cache
+            emptyDir: {}
+          - name: cachi2-cache
+            emptyDir: {}
+    route: { }
+    gateway:
+      refs:
+      - name: data-science-gateway
+        namespace: openshift-ingress
+  template:
+    containers:
+      - name: main
+        env:
+          # Pod IP used in KV cache event topic
+          - name: POD_IP
+            valueFrom:
+              fieldRef:
+                apiVersion: v1
+                fieldPath: status.podIP
+          - name: MODEL_NAME
+            value: TinyLlama/TinyLlama-1.1B-Chat-v1.0
+          # Hash seed must match scheduler configuration
+          - name: PYTHONHASHSEED
+            value: "42"
+          # Configure vLLM for prefix caching with KV cache event publishing
+          - name: VLLM_ADDITIONAL_ARGS
+            value: '--enable-prefix-caching --prefix-caching-hash-algo sha256_cbor --block-size 64 --kv-events-config ''{"enable_kv_cache_events": true, "publisher": "zmq", "endpoint": "tcp://qwen2-7b-kv-cache-routing-epp-service:5557", "topic": "kv@$(POD_IP)@$(MODEL_NAME)"}'''
+            #value: "--enable-prefix-caching"
+        resources:
+          limits:
+            cpu: '4'
+            memory: 32Gi
+            nvidia.com/gpu: "1"
+          requests:
+            cpu: '2'
+            memory: 16Gi
+            nvidia.com/gpu: "1"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+            scheme: HTTPS
+          initialDelaySeconds: 240
+          periodSeconds: 30
+          timeoutSeconds: 30
+          failureThreshold: 5
