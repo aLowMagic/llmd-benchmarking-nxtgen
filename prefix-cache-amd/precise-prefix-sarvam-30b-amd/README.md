@@ -8,12 +8,11 @@ This guide demonstrates how to configure the inference scheduler to use the new 
 
 ## Hardware Requirements
 
-This example out of the box uses 16 GPUs (8 replicas x 2 GPUs each) of any supported kind:
+This example out of the box uses 8 AMD GPUs (8 replicas x 1 GPU each):
 
-- **NVIDIA GPUs**: Any NVIDIA GPU (support determined by the inferencing image used)
-- **Intel XPU/GPUs**: Intel Data Center GPU Max 1550 or compatible Intel XPU device
+- **AMD GPUs**: AMD GPUs supported by the ROCm inferencing image used by this guide
 
-**Using fewer accelerators**: Fewer accelerators can be used by modifying the `values.yaml` corresponding to your deployment. For example, to use only 2 GPUs with the default NVIDIA GPU deployment, update `replicas: 2` in [ms-kv-events/values.yaml](./ms-kv-events/values.yaml#L16-L21).
+**Using fewer accelerators**: Fewer accelerators can be used by modifying the `values.yaml` corresponding to your deployment. For example, to use only 2 GPUs with the default AMD GPU deployment, update `replicas: 2` in [ms-kv-events-amd/values.yaml](./ms-kv-events-amd/values.yaml#L16-L24).
 
 ## Prerequisites
 
@@ -37,7 +36,7 @@ Use the helmfile to compose and install the stack. The Namespace in which the st
 ### Deploy
 
 ```bash
-cd guides/precise-prefix-cache-aware
+cd prefix-cache-amd/precise-prefix-sarvam-30b-amd
 helmfile apply -n ${NAMESPACE}
 ```
 
@@ -48,7 +47,7 @@ This is useful for active-active multi-scheduler deployments - to maintain a glo
 To enable pod discovery mode:
 
 ```bash
-cd guides/precise-prefix-cache-aware
+cd prefix-cache-amd/precise-prefix-sarvam-30b-amd
 POD_DISCOVERY=true helmfile apply -n ${NAMESPACE}
 ```
 

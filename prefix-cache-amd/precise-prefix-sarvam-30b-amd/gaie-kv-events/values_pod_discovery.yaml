@@ -15,7 +15,7 @@ inferenceExtension:
           name: llm-d-hf-token
           key: HF_TOKEN
   sidecar:
-    enabled: true
+    enabled: false  # disabled: sarvam-30b needs trust_remote_code which the UDS tokenizer image doesn't support; scorer uses HF-backed tokenizer instead
     image: ghcr.io/llm-d/llm-d-uds-tokenizer:v0.7.1
     imagePullPolicy: IfNotPresent
     name: tokenizer-uds
@@ -52,9 +52,9 @@ inferenceExtension:
         - type: single-profile-handler
         - type: tokenizer
           parameters:
-            modelName: Qwen/Qwen3-32B
-            udsTokenizerConfig:
-              socketFile: /tmp/tokenizer/tokenizer-uds.socket
+            modelName: sarvamai/sarvam-30b
+            hfTokenizerConfig:
+              trustRemoteCode: true
         - type: precise-prefix-cache-scorer
           parameters:
             tokenProcessorConfig:
@@ -62,15 +62,15 @@ inferenceExtension:
             indexerConfig:
               speculativeIndexing: true
               tokenizersPoolConfig:
-                modelName: Qwen/Qwen3-32B
+                modelName: sarvamai/sarvam-30b
                 local: null
-                hf: null
-                uds:
-                  socketFile: /tmp/tokenizer/tokenizer-uds.socket
+                uds: null
+                hf:
+                  trustRemoteCode: true
             kvEventsConfig:
               topicFilter: "kv@"
               concurrency: 4
-              discoverPods: false
+              discoverPods: true
               zmqEndpoint: "tcp://*:5557"
         - type: kv-cache-utilization-scorer
         - type: queue-scorer

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Deploy / teardown the precise-prefix-cache-aware stack for
-# sarvamai/sarvam-30b on OpenShift with 4 h100nvl GPUs (2 per node).
+# sarvamai/sarvam-30b on OpenShift with AMD GPUs.
 #
 # Usage:
 #   ./deploy.sh deploy       Install from empty namespace (idempotent)
@@ -16,11 +16,13 @@
 #                            from an existing secret in SOURCE_NAMESPACE
 #   SOURCE_NAMESPACE         Namespace to copy HF token secret from if
 #                            HF_TOKEN env is unset (default: llm-d-precise-prefix-sarvam)
+#   DECODE_REPLICAS          Expected decode pod count (default: 8)
 
 set -euo pipefail
 
 NAMESPACE="${NAMESPACE:-llm-d-sarvam-kv}"
 SOURCE_NAMESPACE="${SOURCE_NAMESPACE:-llm-d-precise-prefix-sarvam}"
+DECODE_REPLICAS="${DECODE_REPLICAS:-8}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Inherit llm-d guide prereq directory two levels up — matches existing layout
@@ -103,14 +105,14 @@ wait_for_pods() {
     log "Waiting for EPP deployment rollout (up to 5m)"
     kubectl rollout status -n "$NAMESPACE" deploy/"$EPP_SVC" --timeout=300s || true
 
-    log "Waiting for 4/4 decode pods ready (up to 35m for first pull)"
+    log "Waiting for $DECODE_REPLICAS/$DECODE_REPLICAS decode pods ready (up to 35m for first pull)"
     local deadline=$(( $(date +%s) + 2100 ))
     while true; do
         local ready
         ready=$(kubectl get pods -n "$NAMESPACE" -l llm-d.ai/role=decode --no-headers 2>/dev/null \
                 | awk '$2=="1/1"' | wc -l | tr -d ' ')
-        echo "  decode ready=$ready/4"
-        [[ "$ready" == "4" ]] && break
+        echo "  decode ready=$ready/$DECODE_REPLICAS"
+        [[ "$ready" == "$DECODE_REPLICAS" ]] && break
         [[ $(date +%s) -gt $deadline ]] && err "timeout waiting for decode pods"
         sleep 30
     done

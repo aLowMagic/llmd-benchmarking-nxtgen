@@ -90,12 +90,12 @@ releases:
       {{- if or (eq .Environment.Name "xpu") (eq .Environment.Name "xpu-agentgateway") }}
       - ms-kv-events/values_xpu_pod_discovery.yaml
       {{- else }}
-      - ms-kv-events/values_pod_discovery.yaml
+      - ms-kv-events-amd/values_pod_discovery.yaml
       {{- end }}
     {{- else if or (eq .Environment.Name "xpu") (eq .Environment.Name "xpu-agentgateway") }}
       - ms-kv-events/values_xpu.yaml
     {{- else }}
-      - ms-kv-events/values.yaml
+      - ms-kv-events-amd/values.yaml
     {{- end }}
     {{- if or (eq .Environment.Name "istio") (eq .Environment.Name "default") }}
       - routing:
