@@ -1,0 +1,124 @@
+multinode: false
+
+modelArtifacts:
+  uri: "hf://ibm-granite/granite-4.1-8b"
+  name: "ibm-granite/granite-4.1-8b"
+  size: 40Gi
+  authSecretName: "llm-d-hf-token"
+  labels:
+    llm-d.ai/inference-serving: "true"
+    llm-d.ai/guide: "precise-prefix-cache-aware"
+    llm-d.ai/accelerator-variant: "gpu"
+    llm-d.ai/accelerator-vendor: "amd"
+    llm-d.ai/model: "granite-4.1-8b"
+
+routing:
+  proxy:
+    enabled: false
+
+accelerator:
+  type: amd
+
+decode:
+  create: true
+  parallelism:
+    tensor: 1
+    data: 1
+  replicas: 8
+  nodeSelector:
+    feature.node.kubernetes.io/amd-gpu: "true"
+  monitoring:
+    podmonitor:
+      enabled: false
+  containers:
+    - name: "vllm"
+      image: ghcr.io/llm-d/llm-d-rocm:v0.6.0
+      modelCommand: vllmServe
+      args:
+        - "--block-size=16"
+        - "--kv-events-config"
+        - |-
+          {
+            "enable_kv_cache_events": true,
+            "publisher": "zmq",
+            "endpoint": "tcp://gaie-$(GAIE_RELEASE_NAME_POSTFIX)-epp.$(NAMESPACE).svc.cluster.local:5557",
+            "topic": "kv@$(POD_IP):8000@ibm-granite/granite-4.1-8b"
+          }
+        - "--disable-uvicorn-access-log"
+        - "--gpu-memory-utilization=0.90"
+      env:
+        - name: GAIE_RELEASE_NAME_POSTFIX
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: POD_IP
+          valueFrom:
+            fieldRef:
+              apiVersion: v1
+              fieldPath: status.podIP
+        - name: HOME
+          value: /tmp
+        - name: VLLM_USE_V1
+          value: "1"
+        - name: VLLM_LOGGING_LEVEL
+          value: INFO
+        - name: TRITON_CACHE_DIR
+          value: /.triton-cache
+      ports:
+        - containerPort: 8000
+          name: vllm
+          protocol: TCP
+      resources:
+        limits:
+          cpu: '16'
+          memory: 64Gi
+        requests:
+          cpu: '16'
+          memory: 64Gi
+      mountModelVolume: true
+      volumeMounts:
+        - name: metrics-volume
+          mountPath: /.config
+        - name: shm
+          mountPath: /dev/shm
+        - name: torch-compile-cache
+          mountPath: /.cache
+        - name: triton-cache
+          mountPath: /.triton-cache
+      startupProbe:
+        httpGet:
+          path: /v1/models
+          port: vllm
+        initialDelaySeconds: 15
+        periodSeconds: 30
+        timeoutSeconds: 5
+        failureThreshold: 60
+      livenessProbe:
+        httpGet:
+          path: /health
+          port: vllm
+        periodSeconds: 10
+        timeoutSeconds: 5
+        failureThreshold: 3
+      readinessProbe:
+        httpGet:
+          path: /v1/models
+          port: vllm
+        periodSeconds: 5
+        timeoutSeconds: 2
+        failureThreshold: 3
+  volumes:
+    - name: metrics-volume
+      emptyDir: {}
+    - name: torch-compile-cache
+      emptyDir: {}
+    - name: shm
+      emptyDir:
+        medium: Memory
+        sizeLimit: 20Gi
+    - name: triton-cache
+      emptyDir: {}
+
+prefill:
+  create: false

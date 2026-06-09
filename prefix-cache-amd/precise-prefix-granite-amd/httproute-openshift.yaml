@@ -1,0 +1,59 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: decode-backend
+spec:
+  clusterIP: None
+  selector:
+    llm-d.ai/inference-serving: "true"
+    llm-d.ai/guide: precise-prefix-cache-aware
+    llm-d.ai/role: decode
+  ports:
+    - name: vllm
+      port: 8000
+      targetPort: 8000
+      protocol: TCP
+---
+apiVersion: inference.networking.x-k8s.io/v1alpha2
+kind: InferencePool
+metadata:
+  name: gaie-kv-events-v1alpha2
+spec:
+  targetPortNumber: 8000
+  selector:
+    llm-d.ai/inference-serving: "true"
+    llm-d.ai/guide: precise-prefix-cache-aware
+    llm-d.ai/role: decode
+  extensionRef:
+    group: ""
+    kind: Service
+    name: gaie-kv-events-epp
+    portNumber: 9002
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: llm-d-kv-events
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: infra-kv-events-inference-gateway
+  rules:
+    - backendRefs:
+        - name: decode-backend
+          port: 8000
+          weight: 1
+      filters:
+        - type: ExtensionRef
+          extensionRef:
+            group: inference.networking.x-k8s.io
+            kind: InferencePool
+            name: gaie-kv-events-v1alpha2
+      timeouts:
+        backendRequest: 0s
+        request: 0s
+      matches:
+        - path:
+            type: PathPrefix
+            value: /

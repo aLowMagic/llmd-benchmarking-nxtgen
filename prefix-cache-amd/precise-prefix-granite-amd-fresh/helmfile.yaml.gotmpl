@@ -1,0 +1,22 @@
+repositories:
+  - name: llm-d-modelservice
+    url: https://llm-d-incubation.github.io/llm-d-modelservice/
+
+---
+
+{{- $ns := .Namespace | default "llm-d-granite-amd-kv" -}}
+{{- $rn := (env "RELEASE_NAME_POSTFIX") | default "kv-events" -}}
+
+releases:
+  - name: {{ printf "ms-%s" $rn | quote }}
+    namespace: {{ $ns }}
+    chart: llm-d-modelservice/llm-d-modelservice
+    version: v0.4.9
+    installed: true
+    values:
+      - ms-kv-events-amd/values.yaml
+    set:
+      - name: "decode.containers[0].env[0].value"
+        value: {{ printf "%s" $rn | quote }}
+    labels:
+      kind: inference-stack
